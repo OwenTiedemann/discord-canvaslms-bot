@@ -1,0 +1,2 @@
+discord==1.7.3
+canvasapi==2.2.0
