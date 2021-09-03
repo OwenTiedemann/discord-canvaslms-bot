@@ -1,20 +1,34 @@
 import datetime
 import re
-import sqlite3
+import json
 
 import discord
 from discord.ext import commands, tasks
 import asyncio
-from canvasapi import Canvas
 
-conn = sqlite3.connect(r"bot.db")
-c = conn.cursor()
 
-sql_create_modules_table = """ CREATE TABLE IF NOT EXISTS modules (id INT PRIMARY KEY, guild_id INT NOT NULL, channel_id INT NOT NULL, course_id INT NOT NULL, last_module_id INT NOT NULL);"""
-sql_create_announcement_table = """ CREATE TABLE IF NOT EXISTS announcements (id INT PRIMARY KEY, guild_id INT NOT NULL, channel_id INT NOT NULL, course_id INT NOT NULL, last_announcement_id INT NOT NULL);"""
+class CourseAnnouncement:
+    def __init__(self, guild_id, course_id, channel_id, announcement_id):
+        self.guild = guild_id
+        self.course = course_id
+        self.channel = channel_id
+        self.announcement = announcement_id
 
-c.execute(sql_create_announcement_table)
-c.execute(sql_create_modules_table)
+
+class CourseModules:
+    def __init__(self, guild_id, course_id, channel_id, module_ids):
+        self.guild = guild_id
+        self.course = course_id
+        self.channel = channel_id
+        self.modules = module_ids
+
+
+class CourseAssignments:
+    def __init__(self, guild_id, course_id, channel_id, assignment_ids):
+        self.guild = guild_id
+        self.course = course_id
+        self.channel = channel_id
+        self.assignments = assignment_ids
 
 
 def cleanhtml(raw_html):
@@ -28,12 +42,69 @@ class Tracking(commands.Cog, name="Tracking"):
         self.bot = bot
         self.post_announcements.start()
         self.post_modules.start()
+        self.post_assignments.start()
 
     @commands.group(name="track")
     async def track(self, ctx):
         pass
 
+    @track.command(name="assignments", brief="Lists all currently posted assignments")
+    @commands.is_owner()
+    async def _assignments(self, ctx, course_id):
+        try:
+            course = self.bot.canvas.get_course(course_id)
+        except Exception as error:
+            print(error)
+            await ctx.send("Couldn't find that course, try again.")
+            return
+
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
+
+        if str(ctx.guild.id) in guilds_dict:
+            if 'assignments' in guilds_dict[str(ctx.guild.id)]:
+                if str(course_id) in guilds_dict[str(ctx.guild.id)]['assignments']:
+                    await ctx.send('Already tracking that course!')
+                    return
+                else:
+                    guilds_dict[str(ctx.guild.id)]['assignments'][str(course_id)] = {"channel_id": ctx.channel.id,
+                                                                                     "assignment_ids": []}
+            else:
+                guilds_dict[str(ctx.guild.id)]['assignments'] = {str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "assignment_ids": []
+                }
+                }
+        else:
+            guilds_dict[str(ctx.guild.id)] = {"assignments": {
+                str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "assignment_ids": []
+                }
+            }}
+
+        assignments = course.get_assignments()
+
+        for assignment in assignments:
+            guilds_dict[str(ctx.guild.id)]['assignments'][str(course_id)]['assignment_ids'].append(assignment.id)
+            embed = discord.Embed(
+                title=f"{course.course_code} Assignment: ({assignment.id})",
+                url=assignment.html_url,
+                description=assignment.name,
+            )
+            embed.set_footer(text=f"{course.course_code}")
+
+            if assignment.due_at is not None:
+                embed.timestamp = datetime.datetime.strptime(assignment.due_at, "%Y-%m-%dT%H:%M:%SZ")
+
+            await asyncio.sleep(1)
+            await ctx.send(embed=embed)
+
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
+
     @track.command(name="announcements", brief="Tracks given course announcements in channel command is sent")
+    @commands.is_owner()
     async def _announcements(self, ctx, course_id):
         try:
             course = self.bot.canvas.get_course(course_id)
@@ -42,23 +113,30 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send("Couldn't find that course, try again.")
             return
 
-        c.execute(""" SELECT * FROM announcements WHERE guild_id = ? AND course_id = ?""", (ctx.guild.id, course_id))
-        data = c.fetchall()
-        print(data)
-        if len(data) != 0:
-            await ctx.send("Already tracking course")
-            return
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
 
-        c.execute('SELECT COUNT(*) from announcements')
-        c_result = c.fetchone()
-        if c_result is None:
-            row = 0
+        if str(ctx.guild.id) in guilds_dict:
+            if 'announcements' in guilds_dict[str(ctx.guild.id)]:
+                if str(course_id) in guilds_dict[str(ctx.guild.id)]['announcements']:
+                    await ctx.send('Already tracking that course!')
+                    return
+                else:
+                    guilds_dict[str(ctx.guild.id)]['announcements'][str(course_id)] = {"channel_id": ctx.channel.id,
+                                                                                       "last_announcement_id": 0}
+            else:
+                guilds_dict[str(ctx.guild.id)]['announcements'] = {str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "last_announcement_id": 0
+                }
+                }
         else:
-            row = c_result[0]
-
-        c.execute(
-            """ INSERT INTO announcements(id, guild_id, channel_id, course_id, last_announcement_id) VALUES(?, ?, ?, ?, ?)""",
-            (row, ctx.guild.id, ctx.channel.id, course_id, 0))
+            guilds_dict[str(ctx.guild.id)] = {"announcements": {
+                str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "last_announcement_id": 0
+                }
+            }}
 
         announcement_ids = []
 
@@ -72,7 +150,7 @@ class Tracking(commands.Cog, name="Tracking"):
             embed = discord.Embed(
                 title=f"{course.course_code} Announcement: ({announcement.id})",
                 url=announcement.html_url,
-                description=cleanhtml(announcement.message),
+                description=announcement.title + "\n\n" + cleanhtml(announcement.message),
                 timestamp=datetime.datetime.strptime(announcement.posted_at, "%Y-%m-%dT%H:%M:%SZ")
             )
             embed.set_footer(text=f"{course.course_code}")
@@ -81,11 +159,12 @@ class Tracking(commands.Cog, name="Tracking"):
             await asyncio.sleep(1)
             announcement_ids.append(announcement.id)
 
-        c.execute(""" UPDATE announcements SET last_announcement_id = ? WHERE guild_id = ? AND course_id = ?""",
-                  (announcement_ids[-1], ctx.guild.id, course_id))
-        conn.commit()
+        guilds_dict[str(ctx.guild.id)]['announcements'][str(course_id)]['last_announcement_id'] = announcement_ids[-1]
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
 
     @track.command(name="modules", brief="Tracks given courses modules in channel command is posted in")
+    @commands.is_owner()
     async def _modules(self, ctx, course_id):
         try:
             course = self.bot.canvas.get_course(course_id)
@@ -94,30 +173,37 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send("Couldn't find that course, try again.")
             return
 
-        c.execute(""" SELECT * FROM modules WHERE guild_id = ? AND course_id = ?""", (ctx.guild.id, course_id))
-        data = c.fetchall()
-        print(data)
-        if len(data) != 0:
-            await ctx.send("Already tracking course")
-            return
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
 
-        c.execute('SELECT COUNT(*) from modules')
-        c_result = c.fetchone()
-        if c_result is None:
-            row = 0
+        if str(ctx.guild.id) in guilds_dict:
+            if 'modules' in guilds_dict[str(ctx.guild.id)]:
+                if str(course_id) in guilds_dict[str(ctx.guild.id)]['modules']:
+                    await ctx.send('Already tracking that course!')
+                    return
+                else:
+                    guilds_dict[str(ctx.guild.id)]['modules'][str(course_id)] = {"channel_id": ctx.channel.id,
+                                                                                 "module_ids": []}
+            else:
+                guilds_dict[str(ctx.guild.id)]['modules'] = {str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "module_ids": []
+                }
+                }
         else:
-            row = c_result[0]
-
-        c.execute(
-            """ INSERT INTO modules(id, guild_id, channel_id, course_id, last_module_id) VALUES(?, ?, ?, ?, ?)""",
-            (row, ctx.guild.id, ctx.channel.id, course_id, 0))
+            guilds_dict[str(ctx.guild.id)] = {"modules": {
+                str(course_id): {
+                    "channel_id": ctx.channel.id,
+                    "module_ids": []
+                }
+            }}
 
         modules = course.get_modules()
-        highest_module_id = 0
 
         for module in modules:
-            if module.position > highest_module_id:
-                highest_module_id = module.position
+            if module.state == "locked":
+                continue
+            guilds_dict[str(ctx.guild.id)]['modules'][str(course_id)]["module_ids"].append(module.id)
             embed = discord.Embed(
                 title=f"{course.course_code} Module: ({module.id})",
                 description=module.name,
@@ -128,6 +214,7 @@ class Tracking(commands.Cog, name="Tracking"):
                     embed.url = item.html_url
                     break
                 except AttributeError as error:
+                    print(error)
                     pass
 
             embed.set_footer(text=f"{course.course_code}")
@@ -135,38 +222,41 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send(embed=embed)
             await asyncio.sleep(1)
 
-        c.execute(""" UPDATE modules SET last_module_id = ? WHERE guild_id = ? AND course_id = ?""",
-                  (highest_module_id, ctx.guild.id, course_id))
-        conn.commit()
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
 
     @tasks.loop(seconds=30)
     async def post_announcements(self):
-        c.execute(""" SELECT * FROM announcements""")
-        rows = c.fetchall()
-        guilds = []
-        channels = []
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
+
         courses = []
-        last_announcements = []
-        for row in rows:
-            guilds.append(row[1])
-            channels.append(row[2])
-            courses.append(row[3])
-            last_announcements.append(row[4])
+        course_ids = []
+
+        for guild_id, tracking_types in guilds_dict.items():
+            if "announcements" in tracking_types:
+                for course_id, values in tracking_types['announcements'].items():
+                    x = CourseAnnouncement(guild_id=int(guild_id),
+                                           course_id=int(course_id),
+                                           channel_id=values['channel_id'],
+                                           announcement_id=values['last_announcement_id'])
+                    courses.append(x)
+                    course_ids.append(int(course_id))
 
         if not courses:
             return
 
-        announcements = self.bot.canvas.get_announcements(context_codes=courses, latest_only=True)
+        announcements = self.bot.canvas.get_announcements(context_codes=course_ids, latest_only=True)
 
         for announcement in announcements:
             s = announcement.html_url
             start = s.find("/courses/") + len("/courses/")
             end = s.find("/discussion_topics/")
             course_id = int(s[start:end])
-            for guild, channel, course, last_announcement in zip(guilds, channels, courses, last_announcements):
-                if course_id == course:
-                    if announcement.id != last_announcement:
-                        announcement_course = self.bot.canvas.get_course(course)
+            for course in courses:
+                if course_id == course.course:
+                    if announcement.id != course.announcement:
+                        announcement_course = self.bot.canvas.get_course(course.course)
                         embed = discord.Embed(
                             title=f"{announcement_course.course_code} Announcement: ({announcement.id})",
                             url=announcement.html_url,
@@ -175,38 +265,48 @@ class Tracking(commands.Cog, name="Tracking"):
                         )
                         embed.set_footer(text=f"{announcement_course.course_code}")
 
-                        channel = await self.bot.fetch_channel(channel)
+                        channel = await self.bot.fetch_channel(course.channel)
                         await channel.send(embed=embed)
 
-                        c.execute(
-                            """ UPDATE announcements SET last_announcement_id = ? WHERE guild_id = ? AND course_id = ?""",
-                            (announcement.id, guild, course_id))
+                        guilds_dict[str(course.guild)]['announcements'][str(course.course)]['last_announcement_id'] = \
+                            announcement.id
+
                     continue
-        conn.commit()
 
-    @tasks.loop(seconds=30)
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
+
+    @tasks.loop(seconds=300)
     async def post_modules(self):
-        c.execute(""" SELECT * FROM modules""")
-        rows = c.fetchall()
-        guilds = []
-        channels = []
-        courses = []
-        module_positions = []
-        for row in rows:
-            guilds.append(row[1])
-            channels.append(row[2])
-            courses.append(row[3])
-            module_positions.append(row[4])
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
 
-        for guild, channel, course, module_position in zip(guilds, channels, courses, module_positions):
-            course = self.bot.canvas.get_course(course)
-            modules = course.get_modules()
+        courses = []
+        course_ids = []
+
+        for guild_id, tracking_types in guilds_dict.items():
+            if "modules" in tracking_types:
+                for course_id, values in tracking_types['modules'].items():
+                    x = CourseModules(guild_id=int(guild_id),
+                                      course_id=int(course_id),
+                                      channel_id=values['channel_id'],
+                                      module_ids=values['module_ids'])
+                    courses.append(x)
+                    course_ids.append(int(course_id))
+
+        if not courses:
+            return
+
+        for course in courses:
+            course_object = self.bot.canvas.get_course(course.course)
+            modules = course_object.get_modules()
 
             for module in modules:
-                if module.position > module_position:
-                    highest_module_id = module.position
+                if module.state == "locked":
+                    continue
+                if module.id not in course.modules:
                     embed = discord.Embed(
-                        title=f"{course.course_code} Module: ({module.id})",
+                        title=f"{course_object.course_code} Module: ({module.id})",
                         description=module.name,
                     )
                     items = module.get_module_items()
@@ -215,19 +315,65 @@ class Tracking(commands.Cog, name="Tracking"):
                             embed.url = item.html_url
                             break
                         except AttributeError as error:
+                            print(error)
                             pass
 
-                    embed.set_footer(text=f"{course.course_code}")
+                    embed.set_footer(text=f"{course_object.course_code}")
 
-                    channel = await self.bot.fetch_channel(channel)
+                    channel = await self.bot.fetch_channel(course.channel)
                     await channel.send(embed=embed)
 
+                    guilds_dict[str(course.guild)]['modules'][str(course.course)]["module_ids"].append(module.id)
+
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
+
+    @tasks.loop(seconds=30)
+    async def post_assignments(self):
+        with open('guilds.json', 'r') as openfile:
+            guilds_dict = json.load(openfile)
+
+        courses = []
+        course_ids = []
+
+        for guild_id, tracking_types in guilds_dict.items():
+            if "assignments" in tracking_types:
+                for course_id, values in tracking_types['assignments'].items():
+                    x = CourseAssignments(guild_id=int(guild_id),
+                                          course_id=int(course_id),
+                                          channel_id=values['channel_id'],
+                                          assignment_ids=values['assignment_ids'])
+                    courses.append(x)
+                    course_ids.append(int(course_id))
+
+        if not courses:
+            return
+
+        for course in courses:
+            course_object = self.bot.canvas.get_course(course.course)
+            assignments = course_object.get_assignments()
+
+            for assignment in assignments:
+                if assignment.id not in course.assignments:
+                    guilds_dict[str(course.guild)]['assignments'][str(course.course)]['assignment_ids'].append(
+                        assignment.id)
+                    embed = discord.Embed(
+                        title=f"{course_object.course_code} Assignment: ({assignment.id})",
+                        url=assignment.html_url,
+                        description=assignment.name,
+                    )
+                    embed.set_footer(text=f"{course_object.course_code}")
+
+                    if assignment.due_at is not None:
+                        embed.timestamp = datetime.datetime.strptime(assignment.due_at, "%Y-%m-%dT%H:%M:%SZ")
+
+                    channel = await self.bot.fetch_channel(course.channel)
                     await channel.send(embed=embed)
 
-                    c.execute(""" UPDATE modules SET last_module_id = ? WHERE guild_id = ? AND course_id = ?""",
-                              (highest_module_id, guild, course))
+                    await asyncio.sleep(1)
 
-        conn.commit()
+        with open("guilds.json", "w") as outfile:
+            json.dump(guilds_dict, outfile)
 
 
 def setup(bot):
