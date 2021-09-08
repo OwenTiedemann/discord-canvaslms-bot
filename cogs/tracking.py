@@ -58,35 +58,38 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send("Couldn't find that course, try again.")
             return
 
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
-
-        if str(ctx.guild.id) in guilds_dict:
-            if 'assignments' in guilds_dict[str(ctx.guild.id)]:
-                if str(course_id) in guilds_dict[str(ctx.guild.id)]['assignments']:
-                    await ctx.send('Already tracking that course!')
-                    return
-                else:
-                    guilds_dict[str(ctx.guild.id)]['assignments'][str(course_id)] = {"channel_id": ctx.channel.id,
-                                                                                     "assignment_ids": []}
-            else:
-                guilds_dict[str(ctx.guild.id)]['assignments'] = {str(course_id): {
+        exists = False
+        guild_collection = self.bot.database[str(ctx.guild.id)]
+        if await guild_collection.count_documents({"_id": str(course_id)}, limit=1) == 0:
+            course_dict = {
+                "_id": str(course_id),
+                "guild_id": ctx.guild.id,
+                "announcements": {
+                    "channel_id": 0,
+                    "last_announcement_id": 0
+                },
+                "modules": {
+                    "channel_id": 0,
+                    "modules_ids": []
+                },
+                "assignments": {
                     "channel_id": ctx.channel.id,
                     "assignment_ids": []
                 }
-                }
+            }
         else:
-            guilds_dict[str(ctx.guild.id)] = {"assignments": {
-                str(course_id): {
-                    "channel_id": ctx.channel.id,
-                    "assignment_ids": []
-                }
-            }}
+            exists = True
+            course_dict = await guild_collection.find_one({"_id": str(course_id)})
+            if course_dict['assignments']['channel_id'] != 0:
+                await ctx.send('Already tracking assignments for that course!')
+                return
+            else:
+                course_dict['assignments']['channel_id'] = ctx.channel.id
 
         assignments = course.get_assignments()
 
         for assignment in assignments:
-            guilds_dict[str(ctx.guild.id)]['assignments'][str(course_id)]['assignment_ids'].append(assignment.id)
+            course_dict['assignments']['assignment_ids'].append(assignment.id)
             embed = discord.Embed(
                 title=f"{course.course_code} Assignment: ({assignment.id})",
                 url=assignment.html_url,
@@ -100,8 +103,13 @@ class Tracking(commands.Cog, name="Tracking"):
             await asyncio.sleep(1)
             await ctx.send(embed=embed)
 
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
+        if exists:
+            await guild_collection.update_one({"_id": str(course_id)},
+                                              {"$set": {
+                                                  "assignments": course_dict['assignments']
+                                              }})
+        else:
+            await guild_collection.insert_one(course_dict)
 
     @track.command(name="announcements", brief="Tracks given course announcements in channel command is sent")
     @commands.is_owner()
@@ -113,30 +121,34 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send("Couldn't find that course, try again.")
             return
 
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
+        exists = False
 
-        if str(ctx.guild.id) in guilds_dict:
-            if 'announcements' in guilds_dict[str(ctx.guild.id)]:
-                if str(course_id) in guilds_dict[str(ctx.guild.id)]['announcements']:
-                    await ctx.send('Already tracking that course!')
-                    return
-                else:
-                    guilds_dict[str(ctx.guild.id)]['announcements'][str(course_id)] = {"channel_id": ctx.channel.id,
-                                                                                       "last_announcement_id": 0}
-            else:
-                guilds_dict[str(ctx.guild.id)]['announcements'] = {str(course_id): {
+        guild_collection = self.bot.database[str(ctx.guild.id)]
+        if await guild_collection.count_documents({"_id": str(course_id)}, limit=1) == 0:
+            course_dict = {
+                "_id": str(course_id),
+                "guild_id": ctx.guild.id,
+                "announcements": {
                     "channel_id": ctx.channel.id,
                     "last_announcement_id": 0
+                },
+                "modules": {
+                    "channel_id": 0,
+                    "modules_ids": []
+                },
+                "assignments": {
+                    "channel_id": 0,
+                    "assignment_ids": []
                 }
-                }
+            }
         else:
-            guilds_dict[str(ctx.guild.id)] = {"announcements": {
-                str(course_id): {
-                    "channel_id": ctx.channel.id,
-                    "last_announcement_id": 0
-                }
-            }}
+            exists = True
+            course_dict = await guild_collection.find_one({"_id": str(course_id)})
+            if course_dict['announcements']['channel_id'] != 0:
+                await ctx.send('Already tracking announcements for that course!')
+                return
+            else:
+                course_dict['announcements']['channel_id'] = ctx.channel.id
 
         announcement_ids = []
 
@@ -159,9 +171,15 @@ class Tracking(commands.Cog, name="Tracking"):
             await asyncio.sleep(1)
             announcement_ids.append(announcement.id)
 
-        guilds_dict[str(ctx.guild.id)]['announcements'][str(course_id)]['last_announcement_id'] = announcement_ids[-1]
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
+        course_dict['announcements']['last_announcement_id'] = announcement_ids[-1]
+
+        if exists:
+            await guild_collection.update_one({"_id": str(course_id)},
+                                              {"$set": {
+                                                  "announcements": course_dict['announcements']
+                                              }})
+        else:
+            await guild_collection.insert_one(course_dict)
 
     @track.command(name="modules", brief="Tracks given courses modules in channel command is posted in")
     @commands.is_owner()
@@ -173,37 +191,41 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send("Couldn't find that course, try again.")
             return
 
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
+        exists = False
 
-        if str(ctx.guild.id) in guilds_dict:
-            if 'modules' in guilds_dict[str(ctx.guild.id)]:
-                if str(course_id) in guilds_dict[str(ctx.guild.id)]['modules']:
-                    await ctx.send('Already tracking that course!')
-                    return
-                else:
-                    guilds_dict[str(ctx.guild.id)]['modules'][str(course_id)] = {"channel_id": ctx.channel.id,
-                                                                                 "module_ids": []}
-            else:
-                guilds_dict[str(ctx.guild.id)]['modules'] = {str(course_id): {
+        guild_collection = self.bot.database[str(ctx.guild.id)]
+        if await guild_collection.count_documents({"_id": str(course_id)}, limit=1) == 0:
+            course_dict = {
+                "_id": str(course_id),
+                "guild_id": ctx.guild.id,
+                "announcements": {
+                    "channel_id": 0,
+                    "last_announcement_id": 0
+                },
+                "modules": {
                     "channel_id": ctx.channel.id,
-                    "module_ids": []
+                    "modules_ids": []
+                },
+                "assignments": {
+                    "channel_id": 0,
+                    "assignment_ids": []
                 }
-                }
+            }
         else:
-            guilds_dict[str(ctx.guild.id)] = {"modules": {
-                str(course_id): {
-                    "channel_id": ctx.channel.id,
-                    "module_ids": []
-                }
-            }}
+            exists = True
+            course_dict = await guild_collection.find_one({"_id": str(course_id)})
+            if course_dict['modules']['channel_id'] != 0:
+                await ctx.send('Already tracking modules for that course!')
+                return
+            else:
+                course_dict['modules']['channel_id'] = ctx.channel.id
 
         modules = course.get_modules()
 
         for module in modules:
             if module.state == "locked":
                 continue
-            guilds_dict[str(ctx.guild.id)]['modules'][str(course_id)]["module_ids"].append(module.id)
+            course_dict['modules']['modules_ids'].append(module.id)
             embed = discord.Embed(
                 title=f"{course.course_code} Module: ({module.id})",
                 description=module.name,
@@ -222,26 +244,30 @@ class Tracking(commands.Cog, name="Tracking"):
             await ctx.send(embed=embed)
             await asyncio.sleep(1)
 
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
+        if exists:
+            await guild_collection.update_one({"_id": str(course_id)},
+                                              {"$set": {
+                                                  "modules": course_dict['modules']
+                                              }})
+        else:
+            await guild_collection.insert_one(course_dict)
 
     @tasks.loop(seconds=30)
     async def post_announcements(self):
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
+        collections = self.bot.database.list_collection_names()
 
         courses = []
         course_ids = []
 
-        for guild_id, tracking_types in guilds_dict.items():
-            if "announcements" in tracking_types:
-                for course_id, values in tracking_types['announcements'].items():
-                    x = CourseAnnouncement(guild_id=int(guild_id),
-                                           course_id=int(course_id),
-                                           channel_id=values['channel_id'],
-                                           announcement_id=values['last_announcement_id'])
-                    courses.append(x)
-                    course_ids.append(int(course_id))
+        for collection in await collections:
+            courses_cursor = self.bot.database[str(collection)].find({"announcements.channel_id": {'$gt': 0}})
+            for course in await courses_cursor.to_list(length=None):
+                x = CourseAnnouncement(guild_id=int(course['guild_id']),
+                                       course_id=int(course['_id']),
+                                       channel_id=int(course['announcements']['channel_id']),
+                                       announcement_id=int(course['announcements']['last_announcement_id']))
+                courses.append(x)
+                course_ids.append(int(course['_id']))
 
         if not courses:
             return
@@ -268,31 +294,26 @@ class Tracking(commands.Cog, name="Tracking"):
                         channel = await self.bot.fetch_channel(course.channel)
                         await channel.send(embed=embed)
 
-                        guilds_dict[str(course.guild)]['announcements'][str(course.course)]['last_announcement_id'] = \
-                            announcement.id
+                        await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)},
+                                                                              {"$set":
+                                                                                   {"announcements.last_announcement_id": announcement.id}})
 
-                    continue
-
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
-
-    @tasks.loop(seconds=300)
+    @tasks.loop(seconds=30)
     async def post_modules(self):
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
+        collections = self.bot.database.list_collection_names()
 
         courses = []
         course_ids = []
 
-        for guild_id, tracking_types in guilds_dict.items():
-            if "modules" in tracking_types:
-                for course_id, values in tracking_types['modules'].items():
-                    x = CourseModules(guild_id=int(guild_id),
-                                      course_id=int(course_id),
-                                      channel_id=values['channel_id'],
-                                      module_ids=values['module_ids'])
-                    courses.append(x)
-                    course_ids.append(int(course_id))
+        for collection in await collections:
+            courses_cursor = self.bot.database[str(collection)].find({"modules.channel_id": {'$gt': 0}})
+            for course in await courses_cursor.to_list(length=None):
+                x = CourseModules(guild_id=int(course['guild_id']),
+                                  course_id=int(course['_id']),
+                                  channel_id=int(course['modules']['channel_id']),
+                                  module_ids=course['modules']['modules_ids'])
+                courses.append(x)
+                course_ids.append(int(course['_id']))
 
         if not courses:
             return
@@ -300,7 +321,6 @@ class Tracking(commands.Cog, name="Tracking"):
         for course in courses:
             course_object = self.bot.canvas.get_course(course.course)
             modules = course_object.get_modules()
-
             for module in modules:
                 if module.state == "locked":
                     continue
@@ -323,28 +343,29 @@ class Tracking(commands.Cog, name="Tracking"):
                     channel = await self.bot.fetch_channel(course.channel)
                     await channel.send(embed=embed)
 
-                    guilds_dict[str(course.guild)]['modules'][str(course.course)]["module_ids"].append(module.id)
-
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
+                    course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
+                    course_modules = course_dict['modules']['modules_ids']
+                    course_modules.append(module.id)
+                    await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
+                        "modules.modules_ids": course_modules
+                    }})
 
     @tasks.loop(seconds=30)
     async def post_assignments(self):
-        with open('guilds.json', 'r') as openfile:
-            guilds_dict = json.load(openfile)
+        collections = self.bot.database.list_collection_names()
 
         courses = []
         course_ids = []
 
-        for guild_id, tracking_types in guilds_dict.items():
-            if "assignments" in tracking_types:
-                for course_id, values in tracking_types['assignments'].items():
-                    x = CourseAssignments(guild_id=int(guild_id),
-                                          course_id=int(course_id),
-                                          channel_id=values['channel_id'],
-                                          assignment_ids=values['assignment_ids'])
-                    courses.append(x)
-                    course_ids.append(int(course_id))
+        for collection in await collections:
+            courses_cursor = self.bot.database[str(collection)].find({"assignments.channel_id": {'$gt': 0}})
+            for course in await courses_cursor.to_list(length=None):
+                x = CourseAssignments(guild_id=int(course['guild_id']),
+                                      course_id=int(course['_id']),
+                                      channel_id=int(course['assignments']['channel_id']),
+                                      assignment_ids=course['assignments']['assignment_ids'])
+                courses.append(x)
+                course_ids.append(int(course['_id']))
 
         if not courses:
             return
@@ -355,8 +376,6 @@ class Tracking(commands.Cog, name="Tracking"):
 
             for assignment in assignments:
                 if assignment.id not in course.assignments:
-                    guilds_dict[str(course.guild)]['assignments'][str(course.course)]['assignment_ids'].append(
-                        assignment.id)
                     embed = discord.Embed(
                         title=f"{course_object.course_code} Assignment: ({assignment.id})",
                         url=assignment.html_url,
@@ -370,10 +389,12 @@ class Tracking(commands.Cog, name="Tracking"):
                     channel = await self.bot.fetch_channel(course.channel)
                     await channel.send(embed=embed)
 
-                    await asyncio.sleep(1)
-
-        with open("guilds.json", "w") as outfile:
-            json.dump(guilds_dict, outfile)
+                    course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
+                    course_assignments = course_dict['assignments']['assignment_ids']
+                    course_assignments.append(assignment.id)
+                    await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
+                        "assignments.assignment_ids": course_assignments
+                    }})
 
 
 def setup(bot):

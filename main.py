@@ -1,16 +1,16 @@
 import configparser
-import datetime
-import re
 
 import discord
 from discord.ext import commands, tasks
 from canvasapi import Canvas
+import motor.motor_asyncio
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 API_URL = config['CANVAS']['api_url']
 API_KEY = config['CANVAS']['access_token']
 token = config['DISCORD']['token']
+mongo_token = config['MONGODB']['mongo_token']
 
 intents = discord.Intents.default()
 intents.members = True
@@ -18,8 +18,16 @@ intents.members = True
 bot = commands.Bot(command_prefix=['canvas '], intents=intents)
 
 bot.canvas = Canvas(API_URL, API_KEY)
+database_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_token)
+
+bot.database = database_client['CanvasTracking']
 
 initial_extensions = ['cogs.tracking', 'cogs.lists', 'jishaku']
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    await ctx.send(error)
 
 
 if __name__ == '__main__':

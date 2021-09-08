@@ -1,3 +1,5 @@
 discord==1.7.3
 canvasapi==2.2.0
 jishaku==2.3.0
+motor==2.5.1
+pymongo==3.12.0
