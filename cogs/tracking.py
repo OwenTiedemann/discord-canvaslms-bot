@@ -1,6 +1,5 @@
 import datetime
 import re
-import json
 
 import discord
 from discord.ext import commands, tasks
@@ -171,7 +170,12 @@ class Tracking(commands.Cog, name="Tracking"):
             await asyncio.sleep(1)
             announcement_ids.append(announcement.id)
 
-        course_dict['announcements']['last_announcement_id'] = announcement_ids[-1]
+        if announcement_ids:
+            latest_announcement = announcement_ids[-1]
+        else:
+            latest_announcement = 0
+
+        course_dict['announcements']['last_announcement_id'] = latest_announcement
 
         if exists:
             await guild_collection.update_one({"_id": str(course_id)},
@@ -252,7 +256,7 @@ class Tracking(commands.Cog, name="Tracking"):
         else:
             await guild_collection.insert_one(course_dict)
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=600)
     async def post_announcements(self):
         collections = self.bot.database.list_collection_names()
 
@@ -272,33 +276,38 @@ class Tracking(commands.Cog, name="Tracking"):
         if not courses:
             return
 
-        announcements = self.bot.canvas.get_announcements(context_codes=course_ids, latest_only=True)
+        try:
+            announcements = self.bot.canvas.get_announcements(context_codes=course_ids, latest_only=True)
 
-        for announcement in announcements:
-            s = announcement.html_url
-            start = s.find("/courses/") + len("/courses/")
-            end = s.find("/discussion_topics/")
-            course_id = int(s[start:end])
-            for course in courses:
-                if course_id == course.course:
-                    if announcement.id != course.announcement:
-                        announcement_course = self.bot.canvas.get_course(course.course)
-                        embed = discord.Embed(
-                            title=f"{announcement_course.course_code} Announcement: ({announcement.id})",
-                            url=announcement.html_url,
-                            description=cleanhtml(announcement.message),
-                            timestamp=datetime.datetime.strptime(announcement.posted_at, "%Y-%m-%dT%H:%M:%SZ")
-                        )
-                        embed.set_footer(text=f"{announcement_course.course_code}")
+            for announcement in announcements:
+                s = announcement.html_url
+                start = s.find("/courses/") + len("/courses/")
+                end = s.find("/discussion_topics/")
+                course_id = int(s[start:end])
+                for course in courses:
+                    if course_id == course.course:
+                        if announcement.id != course.announcement:
+                            announcement_course = self.bot.canvas.get_course(course.course)
+                            embed = discord.Embed(
+                                title=f"{announcement_course.course_code} Announcement: ({announcement.id})",
+                                url=announcement.html_url,
+                                description=cleanhtml(announcement.message),
+                                timestamp=datetime.datetime.strptime(announcement.posted_at, "%Y-%m-%dT%H:%M:%SZ")
+                            )
+                            embed.set_footer(text=f"{announcement_course.course_code}")
 
-                        channel = await self.bot.fetch_channel(course.channel)
-                        await channel.send(embed=embed)
+                            channel = await self.bot.fetch_channel(course.channel)
+                            await channel.send(embed=embed)
 
-                        await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)},
-                                                                              {"$set":
-                                                                                   {"announcements.last_announcement_id": announcement.id}})
+                            await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)},
+                                                                                  {"$set":
+                                                                                       {"announcements"
+                                                                                        ".last_announcement_id":
+                                                                                            announcement.id}})
+        except Exception as error:
+            print(error)
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=600)
     async def post_modules(self):
         collections = self.bot.database.list_collection_names()
 
@@ -318,39 +327,42 @@ class Tracking(commands.Cog, name="Tracking"):
         if not courses:
             return
 
-        for course in courses:
-            course_object = self.bot.canvas.get_course(course.course)
-            modules = course_object.get_modules()
-            for module in modules:
-                if module.state == "locked":
-                    continue
-                if module.id not in course.modules:
-                    embed = discord.Embed(
-                        title=f"{course_object.course_code} Module: ({module.id})",
-                        description=module.name,
-                    )
-                    items = module.get_module_items()
-                    for item in items:
-                        try:
-                            embed.url = item.html_url
-                            break
-                        except AttributeError as error:
-                            print(error)
-                            pass
+        try:
+            for course in courses:
+                course_object = self.bot.canvas.get_course(course.course)
+                modules = course_object.get_modules()
+                for module in modules:
+                    if module.state == "locked":
+                        continue
+                    if module.id not in course.modules:
+                        embed = discord.Embed(
+                            title=f"{course_object.course_code} Module: ({module.id})",
+                            description=module.name,
+                        )
+                        items = module.get_module_items()
+                        for item in items:
+                            try:
+                                embed.url = item.html_url
+                                break
+                            except AttributeError as error:
+                                print(error)
+                                pass
 
-                    embed.set_footer(text=f"{course_object.course_code}")
+                        embed.set_footer(text=f"{course_object.course_code}")
 
-                    channel = await self.bot.fetch_channel(course.channel)
-                    await channel.send(embed=embed)
+                        channel = await self.bot.fetch_channel(course.channel)
+                        await channel.send(embed=embed)
 
-                    course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
-                    course_modules = course_dict['modules']['modules_ids']
-                    course_modules.append(module.id)
-                    await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
-                        "modules.modules_ids": course_modules
-                    }})
+                        course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
+                        course_modules = course_dict['modules']['modules_ids']
+                        course_modules.append(module.id)
+                        await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
+                            "modules.modules_ids": course_modules
+                        }})
+        except Exception as error:
+            print(error)
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=600)
     async def post_assignments(self):
         collections = self.bot.database.list_collection_names()
 
@@ -370,31 +382,34 @@ class Tracking(commands.Cog, name="Tracking"):
         if not courses:
             return
 
-        for course in courses:
-            course_object = self.bot.canvas.get_course(course.course)
-            assignments = course_object.get_assignments()
+        try:
+            for course in courses:
+                course_object = self.bot.canvas.get_course(course.course)
+                assignments = course_object.get_assignments()
 
-            for assignment in assignments:
-                if assignment.id not in course.assignments:
-                    embed = discord.Embed(
-                        title=f"{course_object.course_code} Assignment: ({assignment.id})",
-                        url=assignment.html_url,
-                        description=assignment.name,
-                    )
-                    embed.set_footer(text=f"{course_object.course_code}")
+                for assignment in assignments:
+                    if assignment.id not in course.assignments:
+                        embed = discord.Embed(
+                            title=f"{course_object.course_code} Assignment: ({assignment.id})",
+                            url=assignment.html_url,
+                            description=assignment.name,
+                        )
+                        embed.set_footer(text=f"{course_object.course_code}")
 
-                    if assignment.due_at is not None:
-                        embed.timestamp = datetime.datetime.strptime(assignment.due_at, "%Y-%m-%dT%H:%M:%SZ")
+                        if assignment.due_at is not None:
+                            embed.timestamp = datetime.datetime.strptime(assignment.due_at, "%Y-%m-%dT%H:%M:%SZ")
 
-                    channel = await self.bot.fetch_channel(course.channel)
-                    await channel.send(embed=embed)
+                        channel = await self.bot.fetch_channel(course.channel)
+                        await channel.send(embed=embed)
 
-                    course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
-                    course_assignments = course_dict['assignments']['assignment_ids']
-                    course_assignments.append(assignment.id)
-                    await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
-                        "assignments.assignment_ids": course_assignments
-                    }})
+                        course_dict = await self.bot.database[str(course.guild)].find_one({"_id": str(course.course)})
+                        course_assignments = course_dict['assignments']['assignment_ids']
+                        course_assignments.append(assignment.id)
+                        await self.bot.database[str(course.guild)].update_one({"_id": str(course.course)}, {"$set": {
+                            "assignments.assignment_ids": course_assignments
+                        }})
+        except Exception as error:
+            print(error)
 
 
 def setup(bot):
